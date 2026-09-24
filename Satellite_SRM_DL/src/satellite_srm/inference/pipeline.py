@@ -76,6 +76,13 @@ class FullSceneSRMPipeline:
             unc_blender.add_tile(target_row, target_col, tile_unc)
 
         sr_image = sr_blender.finalize()
+        # OUTPUT NORMALIZATION FIX (2026-09-23):
+        # SwinIR outputs are unconstrained floats (observed: [-8.72, +22.01]).
+        # The normalizer clips INPUT to [0,1] reflectance; we must clamp OUTPUT
+        # back to the same physical range before writing to disk.
+        # Without this, SpectralIndices (NDVI, NDWI) produce physically meaningless results.
+        sr_image = np.clip(sr_image, 0.0, 1.0)
+
         unc_image = unc_blender.finalize()
 
         # Update metadata to target sub-4m spatial resolution

@@ -93,24 +93,34 @@ def write_geotiff(filepath: str, data: np.ndarray, metadata: GeoMetadata) -> str
     Writes a multi-band array to a standardized GeoTIFF, ensuring QGIS compatibility.
     """
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    if os.path.exists(filepath):
+        try:
+            os.remove(filepath)
+        except Exception:
+            pass
+
     if data.ndim == 2:
         data = data[np.newaxis, ...]
 
     if HAS_RASTERIO:
         profile = {
             "driver": "GTiff",
-            "height": metadata.height,
-            "width": metadata.width,
-            "count": metadata.count,
-            "dtype": data.dtype,
+            "height": int(metadata.height),
+            "width": int(metadata.width),
+            "count": int(metadata.count),
+            "dtype": str(data.dtype),
             "crs": metadata.crs,
             "transform": metadata.transform,
             "nodata": metadata.nodata,
             "compress": "deflate",
-            "tiled": True,
-            "blockxsize": min(256, metadata.width),
-            "blockysize": min(256, metadata.height)
         }
+        if metadata.width >= 256 and metadata.height >= 256 and (metadata.width % 16 == 0) and (metadata.height % 16 == 0):
+            profile.update({
+                "tiled": True,
+                "blockxsize": 256,
+                "blockysize": 256
+            })
+
         with rasterio.open(filepath, "w", **profile) as dst:
             dst.write(data)
             for i, name in enumerate(metadata.band_names[:metadata.count]):

@@ -23,6 +23,9 @@ PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(PROJECT_DIR, "src"))
 os.chdir(PROJECT_DIR)
 
+from dotenv import load_dotenv
+load_dotenv(os.path.join(PROJECT_DIR, ".env"))
+
 # ── acquisition ──────────────────────────────────────────────────────────────
 from satellite_srm.acquisition.sentinel2 import Sentinel2Downloader
 
@@ -278,6 +281,9 @@ def main():
     use_cuda = torch.cuda.is_available() if hasattr(torch, "cuda") else False
     device_str = "cuda" if use_cuda else "cpu"
     logger.info(f"\nUsing device: {device_str}")
+    if not use_cuda and hasattr(torch, "set_num_threads"):
+        torch.set_num_threads(4)
+        logger.info(f"Set PyTorch CPU threads to {torch.get_num_threads()}")
 
     model_config = {
         "model": {
@@ -294,7 +300,7 @@ def main():
             },
         },
         "training": {
-            "epochs": 50,
+            "epochs": 5,
             "batch_size": 4,
             "learning_rate": 1e-4,
             "weight_decay": 1e-4,

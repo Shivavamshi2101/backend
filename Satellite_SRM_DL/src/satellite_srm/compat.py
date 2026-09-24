@@ -122,6 +122,9 @@ else:
         def detach(self):
             return self.clone()
 
+        def item(self):
+            return self._data.item()
+
         def mean(self, axis=None, keepdims=False):
             return Tensor(np.mean(self._data, axis=axis, keepdims=keepdims))
 
@@ -467,6 +470,10 @@ else:
         autocast = DummyAutocast
         cuda_amp = type("Amp", (), {"GradScaler": DummyGradScaler})()
         no_grad = DummyNoGrad
+
+        @staticmethod
+        def device(device_name: str):
+            return type("Device", (), {"type": device_name})()
 
         @staticmethod
         def from_numpy(arr: np.ndarray) -> Tensor:

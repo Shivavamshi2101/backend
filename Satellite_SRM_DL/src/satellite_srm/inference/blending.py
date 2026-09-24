@@ -11,8 +11,8 @@ class OverlapBlender:
         self.out_width = out_width
         self.blending_method = blending_method
 
-        self.accumulator = np.zeros((channels, out_height, out_width), dtype=np.float64)
-        self.weight_sum = np.zeros((1, out_height, out_width), dtype=np.float64)
+        self.accumulator = np.zeros((channels, out_height, out_width), dtype=np.float32)
+        self.weight_sum = np.zeros((1, out_height, out_width), dtype=np.float32)
 
     def add_tile(self, row_start: int, col_start: int, tile_data: np.ndarray):
         c, h, w = tile_data.shape

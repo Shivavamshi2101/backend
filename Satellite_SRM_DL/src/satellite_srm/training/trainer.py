@@ -74,19 +74,28 @@ class SRMTrainer:
             lr_batch = lr_batch.to(self.device)
             hr_batch = hr_batch.to(self.device)
 
+            if b < 3:
+                logger.info(f"    Batch {b} start forward pass")
             self.optimizer.zero_grad()
             pred = self.model(lr_batch)
             loss_dict = self.loss_fn(pred, hr_batch)
             loss = loss_dict["total_loss"]
 
+            if b < 3:
+                logger.info(f"    Batch {b} start backward pass")
             if hasattr(loss, "backward"):
                 loss.backward()
             self.optimizer.step()
+            if b < 3:
+                logger.info(f"    Batch {b} done")
 
             if self.ema:
                 self.ema.update(self.model)
 
             total_loss += float(loss.detach().cpu().item() if hasattr(loss, "detach") else (loss.numpy() if hasattr(loss, "numpy") else loss))
+            
+            if (b + 1) % 50 == 0 or b == num_batches - 1:
+                logger.info(f"    Epoch {epoch} - Batch {b + 1}/{num_batches} - Loss: {total_loss / (b + 1):.4f}")
 
         avg_loss = total_loss / max(1, num_batches)
         self.scheduler.step()
