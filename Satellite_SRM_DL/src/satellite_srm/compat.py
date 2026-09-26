@@ -238,7 +238,7 @@ else:
         def state_dict(self) -> Dict[str, Any]:
             sd = {}
             for k, v in self._parameters.items():
-                sd[k] = v.numpy()
+                sd[k] = v.numpy() if hasattr(v, 'numpy') else np.array(v)
             for mod_name, mod in self._modules.items():
                 for k, v in mod.state_dict().items():
                     sd[f"{mod_name}.{k}"] = v
@@ -248,14 +248,28 @@ else:
             for k, v in state_dict.items():
                 parts = k.split('.')
                 curr = self
+                resolved = True
                 for part in parts[:-1]:
-                    if hasattr(curr, part):
-                        curr = getattr(curr, part)
-                    else:
-                        break
+                    # Try direct attribute first, then _modules dict
+                    if hasattr(curr, part) and not part.startswith('_'):
+                        next_obj = getattr(curr, part)
+                        if isinstance(next_obj, (Module, Parameter)):
+                            curr = next_obj
+                            continue
+                    if hasattr(curr, '_modules') and part in curr._modules:
+                        curr = curr._modules[part]
+                        continue
+                    resolved = False
+                    break
+                if not resolved:
+                    continue
                 leaf = parts[-1]
-                if hasattr(curr, leaf):
-                    setattr(curr, leaf, Parameter(v if isinstance(v, np.ndarray) else np.array(v)))
+                val = Parameter(v if isinstance(v, np.ndarray) else np.array(v))
+                if hasattr(curr, leaf) and not leaf.startswith('_'):
+                    setattr(curr, leaf, val)
+                elif hasattr(curr, '_parameters') and leaf in curr._parameters:
+                    curr._parameters[leaf] = val
+                    object.__setattr__(curr, leaf, val)
             return {"missing_keys": [], "unexpected_keys": []}
 
         def __call__(self, *args, **kwargs):
@@ -307,20 +321,52 @@ else:
             else:
                 self.bias = None
 
-        def forward(self, x: Tensor) -> Tensor:
-            # High-performance 2D spatial convolution or bicubic/frequency filtering
+        def forward(self, x) -> 'Tensor':
+            # Real 2D spatial convolution using numpy im2col
             arr = x.numpy() if isinstance(x, Tensor) else x
-            b, c, h, w = arr.shape
-            # For CPU fallback inference, perform channel mapping and spatial projection
+            b, c_in, h, w = arr.shape
             out_c = self.out_channels
-            out_arr = np.zeros((b, out_c, h, w), dtype=np.float32)
-            w_mat = self.weight.numpy().reshape(out_c, -1)
-            # Lightweight spatial smoothing + linear projection
-            for i in range(b):
-                c_mean = np.mean(arr[i], axis=0, keepdims=True)
-                proj = np.repeat(c_mean, out_c, axis=0) * 0.8 + 0.2 * np.random.randn(out_c, h, w) * 0.01
-                out_arr[i] = proj
-            return Tensor(out_arr)
+            ks = self.kernel_size
+            pad = self.padding
+            stride = self.stride
+
+            w_arr = self.weight.numpy() if hasattr(self.weight, 'numpy') else self.weight  # (out_c, c_in, ks, ks)
+            b_arr = (self.bias.numpy() if hasattr(self.bias, 'numpy') else self.bias) if self.bias is not None else None
+
+            # Pad input
+            if pad > 0:
+                arr_padded = np.pad(arr, ((0, 0), (0, 0), (pad, pad), (pad, pad)), mode='constant', constant_values=0)
+            else:
+                arr_padded = arr
+
+            h_out = (h + 2 * pad - ks) // stride + 1
+            w_out = (w + 2 * pad - ks) // stride + 1
+
+            # im2col: extract patches as columns for matmul-based convolution
+            # col shape: (b, c_in*ks*ks, h_out*w_out)
+            col = np.zeros((b, c_in * ks * ks, h_out * w_out), dtype=np.float32)
+            idx = 0
+            for ci in range(c_in):
+                for ki in range(ks):
+                    for kj in range(ks):
+                        col[:, idx, :] = arr_padded[:, ci, ki:ki + stride * h_out:stride, kj:kj + stride * w_out:stride].reshape(b, -1)
+                        idx += 1
+
+            # w_col: (out_c, c_in*ks*ks); col[bi]: (c_in*ks*ks, h_out*w_out)
+            w_col = w_arr.reshape(out_c, -1)
+            if w_col.shape[1] != col.shape[1]:
+                print(f"DEBUG Conv2d: w_arr.shape={w_arr.shape}, w_col.shape={w_col.shape}, col.shape={col.shape}, in_channels={self.in_channels}, out_channels={self.out_channels}")
+
+            # Batch matmul
+            output = np.zeros((b, out_c, h_out * w_out), dtype=np.float32)
+            for bi in range(b):
+                output[bi] = np.dot(w_col, col[bi])  # (out_c, h_out*w_out)
+
+            if b_arr is not None:
+                output += b_arr.reshape(1, out_c, 1)
+
+            output = output.reshape(b, out_c, h_out, w_out)
+            return Tensor(output)
 
     class Linear(Module):
         def __init__(self, in_features, out_features, bias=True):

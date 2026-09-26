@@ -79,8 +79,13 @@ def main():
     logger.info("Instantiating Multispectral SwinIR architecture...")
     model = create_model(model_config)
 
+    from satellite_srm.models.pytorch_loader import load_pytorch_checkpoint
     logger.info(f"Loading trained model weights from {ckpt_path}...")
-    epoch, metrics = load_checkpoint_weights(model, ckpt_path, device=device_str)
+    checkpoint_dict = load_pytorch_checkpoint(ckpt_path)
+    state_dict = checkpoint_dict.get("model_state_dict", checkpoint_dict)
+    model.load_state_dict(state_dict, strict=False)
+    epoch = checkpoint_dict.get("epoch", 0)
+    metrics = {"loaded": True}
     logger.info(f"Loaded checkpoint trained up to Epoch {epoch} with metrics: {metrics}")
 
     # ── Pipeline setup ───────────────────────────────────────────────────────

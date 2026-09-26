@@ -29,9 +29,12 @@ class MonteCarloUncertaintyEstimator:
     def enable_dropout_at_inference(self):
         """Forces dropout layers to remain active during evaluation."""
         self.model.eval()
-        for m in getattr(self.model, "_modules", {}).values():
-            if isinstance(m, nn.Dropout):
-                m.train(True)
+        def _enable_dropout(module):
+            if isinstance(module, nn.Dropout):
+                module.train(True)
+            for m in getattr(module, "_modules", {}).values():
+                _enable_dropout(m)
+        _enable_dropout(self.model)
 
     def predict_with_uncertainty(self, x_input) -> UncertaintyResult:
         self.enable_dropout_at_inference()

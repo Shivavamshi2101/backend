@@ -18,13 +18,13 @@ swinir:
   - 2
   drop_path_rate: 0.1
   drop_rate: 0.05
-  embed_dim: 64
+  embed_dim: 48
   img_size: 128
   in_channels: 4
   mlp_ratio: 2.0
   num_heads:
-  - 4
-  - 4
+  - 6
+  - 6
   out_channels: 4
   patch_size: 1
   qkv_bias: true

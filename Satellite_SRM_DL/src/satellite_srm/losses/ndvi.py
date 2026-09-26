@@ -15,8 +15,8 @@ class NDVIConsistencyLoss(nn.Module):
         self.epsilon = epsilon
 
     def compute_ndvi(self, x):
-        red = x[:, self.red_idx:self.red_idx+1, :, :]
-        nir = x[:, self.nir_idx:self.nir_idx+1, :, :]
+        red = torch.clamp(x[:, self.red_idx:self.red_idx+1, :, :], min=0.0)
+        nir = torch.clamp(x[:, self.nir_idx:self.nir_idx+1, :, :], min=0.0)
         ndvi = (nir - red) / (nir + red + self.epsilon)
         return ndvi
 

@@ -9,7 +9,7 @@ import time
 import uuid
 import shutil
 import asyncio
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, HTTPException
@@ -401,46 +401,39 @@ def stack_four_bands(band_paths: dict[str, str], output_stacked_path: str):
     """
     Stacks four separate band files into a single 4-channel GeoTIFF
     with strict channel order:
-      Channel 0: B02 (Blue)
-      Channel 1: B03 (Green)
-      Channel 2: B04 (Red)
-      Channel 3: B08 (NIR)
+      Channel 1: B02 (Blue)
+      Channel 2: B03 (Green)
+      Channel 3: B04 (Red)
+      Channel 4: B08 (NIR)
+    Preserves original dtype (uint16) and geospatial metadata.
     """
+    import rasterio
     import numpy as np
-    from PIL import Image
 
-    def read_single_channel(p: str) -> np.ndarray:
-        with Image.open(p) as img:
-            arr = np.array(img)
-            if arr.ndim == 3:
-                arr = arr[:, :, 0]
-            elif arr.ndim > 3:
-                arr = np.squeeze(arr)
-            return arr
+    with rasterio.open(band_paths["b02"]) as src:
+        b02_arr = src.read(1)
+        profile = src.profile
 
-    b02_arr = read_single_channel(band_paths["b02"])
-    b03_arr = read_single_channel(band_paths["b03"])
-    b04_arr = read_single_channel(band_paths["b04"])
-    b08_arr = read_single_channel(band_paths["b08"])
+    with rasterio.open(band_paths["b03"]) as src:
+        b03_arr = src.read(1)
+        
+    with rasterio.open(band_paths["b04"]) as src:
+        b04_arr = src.read(1)
+        
+    with rasterio.open(band_paths["b08"]) as src:
+        b08_arr = src.read(1)
 
-    # Ensure 8-bit uint8 representations for Pillow RGBA packaging
-    def to_u8(a):
-        if a.dtype == np.uint8:
-            return a
-        # Adaptive stretch to uint8
-        mn, mx = float(np.min(a)), float(np.max(a))
-        if mx - mn < 1e-5:
-            return np.full_like(a, 128, dtype=np.uint8)
-        norm = np.clip((a.astype(np.float32) - mn) / (mx - mn), 0.0, 1.0)
-        return (norm * 255.0).astype(np.uint8)
+    profile.update(
+        count=4,
+        dtype=b02_arr.dtype
+    )
 
-    stacked_img = Image.merge("RGBA", (
-        Image.fromarray(to_u8(b02_arr)),  # Channel 0 / R = B02
-        Image.fromarray(to_u8(b03_arr)),  # Channel 1 / G = B03
-        Image.fromarray(to_u8(b04_arr)),  # Channel 2 / B = B04
-        Image.fromarray(to_u8(b08_arr)),  # Channel 3 / A = B08
-    ))
-    stacked_img.save(output_stacked_path, format="TIFF")
+    with rasterio.open(output_stacked_path, 'w', **profile) as dst:
+        dst.write(b02_arr, 1)
+        dst.write(b03_arr, 2)
+        dst.write(b04_arr, 3)
+        dst.write(b08_arr, 4)
+
     return output_stacked_path
 
 
@@ -547,20 +540,30 @@ def generate_product_for_raster(input_path: str, job_id: str, scale_factor: floa
         # Disable device=auto in some environments to prevent issues
         cfg["device"] = "cpu" if not os.environ.get("USE_CUDA") else "cuda"
         
-        # Override SwinIR dimensions to match the downloaded checkpoint (best.pt)
+        # Override SwinIR dimensions to match the downloaded checkpoint
         if "swinir" in cfg.get("model", {}):
-            cfg["model"]["swinir"]["embed_dim"] = 48
-            cfg["model"]["swinir"]["num_heads"] = [6, 6]
-            cfg["model"]["swinir"]["depths"] = [2, 2]
+            cfg["model"]["swinir"]["embed_dim"] = 60
+            cfg["model"]["swinir"]["num_heads"] = [6, 6, 6, 6]
+            cfg["model"]["swinir"]["depths"] = [4, 4, 4, 4]
+            cfg["model"]["swinir"]["window_size"] = 4
             
         model = create_model(cfg)
         
-        ckpt_path = os.path.join(SATELLITE_SRM_DIR, "checkpoints", "checkpoints", "best.pt")
+        ckpt_path = os.path.join(SATELLITE_SRM_DIR, "outputs", "checkpoints", "srm_corrected_v1.pt")
         if os.path.exists(ckpt_path):
             from satellite_srm.models.pytorch_loader import load_pytorch_checkpoint
+            import torch
             checkpoint_dict = load_pytorch_checkpoint(ckpt_path)
-            state_dict = checkpoint_dict.get("model_state_dict", checkpoint_dict)
-            model.load_state_dict(state_dict, strict=False)
+            if "model_state" in checkpoint_dict:
+                state_dict = checkpoint_dict["model_state"]
+            elif "model_state_dict" in checkpoint_dict:
+                state_dict = checkpoint_dict["model_state_dict"]
+            else:
+                state_dict = checkpoint_dict
+                
+            state_dict = {k: torch.tensor(v) if isinstance(v, np.ndarray) else v for k, v in state_dict.items()}
+            model.load_state_dict(state_dict, strict=True)
+            print(f"[Satellite-SRM] Successfully loaded checkpoint: {ckpt_path}")
             
         pipeline = FullSceneSRMPipeline(model, config=cfg)
         
@@ -810,12 +813,12 @@ def health_check():
 
 @app.post("/api/v1/validate-bands")
 async def validate_bands_endpoint(
-    b02: Optional[UploadFile] = File(None),
-    b03: Optional[UploadFile] = File(None),
-    b04: Optional[UploadFile] = File(None),
-    b08: Optional[UploadFile] = File(None),
-    file: Optional[UploadFile] = File(None),
-    files: Optional[list[UploadFile]] = File(None)
+    b02: Union[UploadFile, str, None] = File(None),
+    b03: Union[UploadFile, str, None] = File(None),
+    b04: Union[UploadFile, str, None] = File(None),
+    b08: Union[UploadFile, str, None] = File(None),
+    file: Union[UploadFile, str, None] = File(None),
+    files: Union[list[Union[UploadFile, str]], None] = File(None)
 ):
     """
     Validates uploaded Sentinel-2 imagery before running super-resolution.
@@ -824,6 +827,13 @@ async def validate_bands_endpoint(
       2. Multi-file list 'files' (auto-identifying b02, b03, b04, b08 by filename)
       3. Single legacy 4-band GeoTIFF
     """
+    if not hasattr(b02, "filename"): b02 = None
+    if not hasattr(b03, "filename"): b03 = None
+    if not hasattr(b04, "filename"): b04 = None
+    if not hasattr(b08, "filename"): b08 = None
+    if not hasattr(file, "filename"): file = None
+    if files: files = [f for f in files if hasattr(f, "filename")]
+    
     temp_files = []
     try:
         band_upload_map = {}
@@ -905,17 +915,33 @@ async def validate_bands_endpoint(
 @app.post("/api/v1/super-resolution")
 async def start_super_resolution(
     background_tasks: BackgroundTasks,
-    file: Optional[UploadFile] = File(None),
-    files: Optional[list[UploadFile]] = File(None),
-    b02: Optional[UploadFile] = File(None),
-    b03: Optional[UploadFile] = File(None),
-    b04: Optional[UploadFile] = File(None),
-    b08: Optional[UploadFile] = File(None),
-    reference_file: Optional[UploadFile] = File(None),
+    file: Union[UploadFile, str, None] = File(None),
+    files: Union[list[Union[UploadFile, str]], None] = File(None),
+    b02: Union[UploadFile, str, None] = File(None),
+    b03: Union[UploadFile, str, None] = File(None),
+    b04: Union[UploadFile, str, None] = File(None),
+    b08: Union[UploadFile, str, None] = File(None),
+    reference_file: Union[UploadFile, str, None] = File(None),
     model: str = Form("SwinIR-SRM"),
     enable_uncertainty: str = Form("true"),
     scale_factor: float = Form(3.0)
 ):
+    print(f"[DEBUG] start_super_resolution called.")
+    print(f"[DEBUG] b02: {type(b02)} {hasattr(b02, 'filename')}")
+    print(f"[DEBUG] b03: {type(b03)} {hasattr(b03, 'filename')}")
+    print(f"[DEBUG] files: {type(files)}")
+
+    if not hasattr(b02, "filename"): b02 = None
+    if not hasattr(b03, "filename"): b03 = None
+    if not hasattr(b04, "filename"): b04 = None
+    if not hasattr(b08, "filename"): b08 = None
+    if not hasattr(file, "filename"): file = None
+    if not hasattr(reference_file, "filename"): reference_file = None
+    if files: files = [f for f in files if hasattr(f, "filename")]
+    
+    print(f"[DEBUG] After filtering:")
+    print(f"[DEBUG] b02: {b02}")
+
     # Coerce string "true"/"1"/"yes" -> Python bool
     _enable_uncertainty: bool = enable_uncertainty.strip().lower() in ("true", "1", "yes")
 
@@ -925,6 +951,8 @@ async def start_super_resolution(
     if b03: band_upload_map["b03"] = b03
     if b04: band_upload_map["b04"] = b04
     if b08: band_upload_map["b08"] = b08
+
+    print(f"[DEBUG] band_upload_map keys: {band_upload_map.keys()}")
 
     # Auto-detect from files list if b02..b08 not explicitly named
     if not band_upload_map and files and len(files) >= 4:
